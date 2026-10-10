@@ -16,11 +16,19 @@ from langgraph.graph import StateGraph, START, END
 load_dotenv()
 os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY") # Langchain defaults to looking for GOOGLE_API_KEY
 
+# Add the nested LineItem schema
+class LineItem(BaseModel):
+    description: str = Field(description="Description of the product or service.")
+    quantity: float = Field(description="Quantity of the item.", default=1.0)
+    unit_price: float = Field(description="Price per individual unit.")
+    total: float = Field(description="Total price for this line item.")
+
 # Define the JSON schema required
 class InvoiceData(BaseModel):
     vender_name: str = Field(description="The name of the vendor or company.")
     total_amount: float = Field(description="The total monetary amount of the invoice.")
-
+    line_items: list[LineItem] = Field(description="List of all individual items billed in the invoice.")
+    
 #   Graph State
 class AgentState(TypedDict):
     file_path: str
