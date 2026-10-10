@@ -1,0 +1,25 @@
+[project]
+name = "agentic-policy-invoice"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "TherealArav", email = "aravzgoyal@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "docling>=2.137.0",
+    "google-genai>=2.29.0",
+    "langgraph>=1.2.14",
+    "logfire>=5.1.1",
+    "pydantic>=2.14.0",
+    "pydantic-ai>=2.55.0",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+agentic-policy-invoice = "agentic_policy_invoice:main"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
