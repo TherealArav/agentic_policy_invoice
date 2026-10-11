@@ -67,6 +67,14 @@ async def extract_entities(state: AgentState) -> AgentState:
     extracted_obj: InvoiceData = response.parsed
     return {"extracted_data": extracted_obj.model_dump()}
 
+def verify_vendor_erp(vendor_name: str) -> bool:
+    """Mock ERP database check."""
+    # Simulate a database of approved corporate vendors
+    approved_vendors: list[str] = ["TechCorp Inc.", "Global Supplies LLC", "Acme Corp"]
+    
+    # Simple matching (in production, you'd use fuzzy matching or vector search)
+    return any(approved in vendor_name for approved in approved_vendors)
+
 # Build the LangGraph Workflow
 builder = StateGraph(AgentState)
 builder.add_node("parse_document", parse_document)

@@ -9,12 +9,15 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "docling>=2.137.0",
+    "fastapi>=0.143.0",
     "google-genai>=2.29.0",
     "langgraph>=1.2.14",
     "logfire>=5.1.1",
     "pydantic>=2.14.0",
     "pydantic-ai>=2.55.0",
     "python-dotenv>=1.2.4",
+    "python-multipart>=0.0.32",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
