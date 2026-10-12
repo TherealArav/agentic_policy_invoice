@@ -3,7 +3,7 @@ import json
 import asyncio
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from typing import TypedDict
+from typing import TypedDict, Optional
 from docling.document_converter import DocumentConverter
 
 from google import genai
@@ -25,19 +25,30 @@ class LineItem(BaseModel):
 
 # Define the JSON schema required
 class InvoiceData(BaseModel):
-    vender_name: str = Field(description="The name of the vendor or company.")
+    vendor_name: str = Field(description="The name of the vendor or company.")
     total_amount: float = Field(description="The total monetary amount of the invoice.")
     line_items: list[LineItem] = Field(description="List of all individual items billed in the invoice.")
     
 #   Graph State
 class AgentState(TypedDict):
     file_path: str
+    extracted_data: Optional[dict]
     markdown_content: str
-    extracted_data: dict
+    vendor_verified: bool     
+    needs_review: bool        
+    routing_message: str      
 
 
 # Initialize the Unified GenAI Client
 client = genai.Client()
+
+def verify_vendor_erp(vendor_name: str) -> bool:
+    """Mock ERP database check."""
+    # Simulate a database of approved regional vendors in the UAE
+    approved_vendors = ["Emirates Post", "DEWA", "Etisalat", "Careem Logistics"]
+    
+    # Check if any approved vendor is a substring of the extracted name
+    return any(approved.lower() in vendor_name.lower() for approved in approved_vendors)
 
 async def parse_document(state: AgentState) -> AgentState:
     """Parse the document at the given file path and convert it to markdown"""
@@ -67,23 +78,40 @@ async def extract_entities(state: AgentState) -> AgentState:
     extracted_obj: InvoiceData = response.parsed
     return {"extracted_data": extracted_obj.model_dump()}
 
-def verify_vendor_erp(vendor_name: str) -> bool:
-    """Mock ERP database check."""
-    # Simulate a database of approved corporate vendors
-    approved_vendors: list[str] = ["TechCorp Inc.", "Global Supplies LLC", "Acme Corp"]
-    
-    # Simple matching (in production, you'd use fuzzy matching or vector search)
-    return any(approved in vendor_name for approved in approved_vendors)
+def validate_vendor_node(state: AgentState):
+    """Validate the extracted vendor name against a mock ERP database."""
+    data = state.get("extracted_data", {})
+    if not data or "vendor_name" not in data:
+        return {"vendor_verified": False, "needs_review": True, "routing_message": "Extraction failed or missing vendor."}
+
+    vendor = data["vendor_name"]
+    is_valid = verify_vendor_erp(vendor)
+
+    if is_valid:
+        return {
+            "vendor_verified": True, 
+            "needs_review": False, 
+            "routing_message": f"Auto-Approved: '{vendor}' found in ERP."
+        }
+    else:
+        return {
+            "vendor_verified": False, 
+            "needs_review": True, 
+            "routing_message": f"Flagged: '{vendor}' is an unregistered vendor. Routing to human accounts payable."
+        }
+
 
 # Build the LangGraph Workflow
 builder = StateGraph(AgentState)
 builder.add_node("parse_document", parse_document)
 builder.add_node("extract_entities", extract_entities)
+builder.add_node("validate_vendor", validate_vendor_node)
 
 # Define the flow
 builder.add_edge(START, "parse_document")
 builder.add_edge("parse_document", "extract_entities")
-builder.add_edge("extract_entities", END)
+builder.add_edge("extract_entities", "validate_vendor")
+builder.add_edge("validate_vendor", END)
 
 graph = builder.compile()
 
