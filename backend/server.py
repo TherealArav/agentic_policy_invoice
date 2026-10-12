@@ -15,7 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define the API endpoint for extracting invoice data
+# API endpoint for extracting invoice data
 @app.post("/api/extract")
 async def extract_invoice(file: UploadFile = File(...)):
     # Save the uploaded file temporarily
@@ -29,10 +29,22 @@ async def extract_invoice(file: UploadFile = File(...)):
             final_state = await graph.ainvoke(initial_state)
 
             # Return the extracted data to the frontend
-            return {"status": "success", "data": final_state["extracted_data"]}
+            return{
+            "status": "success", 
+            "data": final_state.get("extracted_data"),
+            "vendor_verified": final_state.get("vendor_verified"),
+            "needs_review": final_state.get("needs_review"),
+            "routing_message": final_state.get("routing_message")
+        }
 
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            return {
+                "status": "error", 
+                "message": str(e), 
+                "data": final_state.get("extracted_data"),
+                "vendor_verified": final_state.get("vendor_verified"),
+                "needs_review": final_state.get("needs_review"),
+                "routing_message": f"Routing error: {final_state.get("routing_message")}."}
         
         finally:
             # Clean up the temporary file
