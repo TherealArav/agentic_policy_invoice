@@ -41,9 +41,8 @@ async def extract_invoice(file: UploadFile = File(...)):
             return {
                 "status": "error", 
                 "message": str(e), 
-                "data": final_state.get("extracted_data"),
-                "vendor_verified": final_state.get("vendor_verified"),
-                "needs_review": final_state.get("needs_review"),
+                "data": None,
+                "needs_review":True,
                 "routing_message": f"Routing error: {final_state.get("routing_message")}."}
         
         finally:
