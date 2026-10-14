@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 
 from langgraph.graph import StateGraph, START, END
-
+from langsmith import traceable, get_current_run_tree
 
 # Load environment variables and configure observability
 load_dotenv()
@@ -42,6 +42,19 @@ class AgentState(TypedDict):
 # Initialize the Unified GenAI Client
 client = genai.Client()
 
+def run_traceable(response: types.GenerateContentConfig):
+    """Helper function to log token usage for traceable runs."""
+    run = get_current_run_tree()
+    if run and hasattr(response, "usage_metadata"):
+        run.add_metadata({
+            "usage_metadata": {
+                "input_tokens": response.usage_metadata.prompt_token_count,
+                "output_tokens": response.usage_metadata.candidates_token_count,
+                "total_tokens": response.usage_metadata.total_token_count,
+            }
+        })
+    
+
 def verify_vendor_erp(vendor_name: str) -> bool:
     """Mock ERP database check."""
     # Simulate a database of approved regional vendors in the UAE
@@ -58,6 +71,7 @@ async def parse_document(state: AgentState) -> AgentState:
     result = converter.convert(state['file_path'])
     return {"markdown_content": result.document.export_to_markdown()}
 
+@traceable(name="Gemini Extraction", run_type="llm")
 async def extract_entities(state: AgentState) -> AgentState:
     print("Extracting data natively with the Google GenAI SDK...")
     prompt = (
@@ -74,6 +88,8 @@ async def extract_entities(state: AgentState) -> AgentState:
             temperature=0,
         ),
     )
+
+    run_traceable(response)
     
     extracted_obj: InvoiceData = response.parsed
     return {"extracted_data": extracted_obj.model_dump()}
