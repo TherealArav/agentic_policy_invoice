@@ -1,7 +1,7 @@
 [project]
 name = "agentic-policy-invoice"
 version = "0.1.0"
-description = "Add your description here"
+description = "Multimodal Invoice Agent Backend"
 readme = "README.md"
 authors = [
     { name = "TherealArav", email = "aravzgoyal@gmail.com" }
@@ -21,9 +21,5 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
-[project.scripts]
-agentic-policy-invoice = "agentic_policy_invoice:main"
-
-[build-system]
-requires = ["uv_build>=0.13.0,<0.14.0"]
-build-backend = "uv_build"
+[tool.uv]
+package = false

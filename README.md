@@ -52,11 +52,11 @@ flowchart TB
 
 ## Key Engineering Highlights
 
-* **Stateful Agentic Workflow (LangGraph):** Replaces fragile prompt chains with a typed state graph (`AgentState`) that tracks document parsing, entity extraction, and verification flags across discrete execution nodes.
-* **Deterministic Hallucination Guardrails:** Never trusts raw LLM outputs blindly. Extracted vendor entities are cross-referenced against a mock UAE corporate ERP registry (`DEWA`, `Emirates Post`, `Etisalat`, `Careem Logistics`) using strict programmatic rules. Unregistered vendors are automatically flagged for manual intervention.
-* **Layout-Aware Document Parsing (Docling):** Converts complex multi-column PDF layouts and tabular structures into clean Markdown representations prior to LLM inference, maximizing extraction accuracy.
-* **Fail-Safe Frontend Architecture (Svelte 5 + Tailwind CSS):** Built with Svelte 5 Runes (`$state`, `$derived`), full-box accessible drag-and-drop zones, skeleton loading animations, and defensive null-coalescing fail-safes (`needs_review ?? true`) so malformed payloads never fail open.
-* **Production Observability (LangSmith):** Full telemetry integration using `@traceable` decorators and custom `RunTree` usage metadata injection (`get_current_run_tree()`) to monitor node latency, token consumption, and state transitions in real time.
+- **Stateful Agentic Workflow (LangGraph):** Replaces fragile prompt chains with a typed state graph (`AgentState`) that tracks document parsing, entity extraction, and verification flags across discrete execution nodes.
+- **Deterministic Hallucination Guardrails:** Never trusts raw LLM outputs blindly. Extracted vendor entities are cross-referenced against a mock UAE corporate ERP registry (`DEWA`, `Emirates Post`, `Etisalat`, `Careem Logistics`) using strict programmatic rules. Unregistered vendors are automatically flagged for manual intervention.
+- **Layout-Aware Document Parsing (Docling):** Converts complex multi-column PDF layouts and tabular structures into clean Markdown representations prior to LLM inference, maximizing extraction accuracy.
+- **Fail-Safe Frontend Architecture (Svelte 5 + Tailwind CSS):** Built with Svelte 5 Runes (`$state`, `$derived`), full-box accessible drag-and-drop zones, skeleton loading animations, and defensive null-coalescing fail-safes (`needs_review ?? true`) so malformed payloads never fail open.
+- **Production Observability (LangSmith):** Full telemetry integration using `@traceable` decorators and custom `RunTree` usage metadata injection (`get_current_run_tree()`) to monitor node latency, token consumption, and state transitions in real time.
 
 ---
 
@@ -75,7 +75,6 @@ flowchart TB
 
 ## Visual Walkthrough
 
-
 | Auto-Approved Invoice (`DEWA`) | Flagged Unregistered Vendor | LangSmith Telemetry Trace |
 | :---: | :---: | :---: |
 | ![Approved Invoice](docs/approved.png) | ![Flagged Invoice](docs/flagged.png) | ![LangSmith Trace](docs/langsmith.png) |
@@ -85,9 +84,10 @@ flowchart TB
 ## Local Setup & Installation
 
 ### Prerequisites
-* **Python 3.12+** and [`uv`](https://docs.astral.sh/uv/)
-* **Node.js 20+** and [`pnpm`](https://pnpm.io/)
-* A **Google Gemini API Key** and **LangSmith API Key**
+- **Python 3.12+** and [`uv`](https://docs.astral.sh/uv/)
+- **Node.js 20+** and [`pnpm`](https://pnpm.io/)
+- A **Google Gemini API Key** and **LangSmith API Key**
+- **Docker** and **Docker Compose** (Optional, for containerized setup)
 
 ### 1. Clone the Repository
 ```bash
@@ -95,8 +95,8 @@ git clone https://github.com/TherealArav/agentic_policy_invoice.git
 cd agentic_policy_invoice
 ```
 
-### 2. Backend Setup
-Navigate to the `backend` directory, configure your environment variables, and launch the FastAPI server:
+### 2. Environment Configuration
+Navigate to the `backend` directory and configure your environment variables:
 
 ```bash
 cd backend
@@ -113,26 +113,47 @@ LANGCHAIN_API_KEY="your-langsmith-api-key-here"
 LANGCHAIN_PROJECT="UAE_Invoice_Agent_Dev"
 ```
 
-Install the locked Python dependencies and start Uvicorn:
+### 3. Run with Docker Compose (Recommended)
+You can launch the entire stack (FastAPI backend + SvelteKit frontend) with a single command from the project root:
+
 ```bash
+# Return to the root directory
+cd ..
+
+# Build and start the containers in detached mode
+docker compose up --build -d
+```
+- Frontend: `http://localhost:5173`
+- Backend API Docs: `http://localhost:8000/docs`
+
+To view live logs:
+```bash
+docker compose logs -f
+```
+
+To stop the containers:
+```bash
+docker compose down
+```
+
+### 4. Run Locally (Without Docker)
+
+#### Backend Setup
+From the `backend` directory, install the locked Python dependencies and start Uvicorn:
+```bash
+cd backend
 uv sync
 uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
-*The API and interactive Swagger documentation will be available at `http://localhost:8000/docs`.*
 
-### 3. Frontend Setup
+#### Frontend Setup
 Open a second terminal window, navigate to the `frontend` directory, and start the SvelteKit development server:
 
 ```bash
 cd frontend
-
-# Install dependencies
 pnpm install
-
-# Start the Vite dev server
 pnpm run dev
 ```
-*Navigate to `http://localhost:5173` in your browser to upload test PDF invoices.*
 
 ---
 
@@ -144,19 +165,22 @@ pnpm run dev
 │   ├── server.py            # FastAPI application, CORS config, and /api/extract endpoint
 │   ├── pyproject.toml       # Python dependencies managed by uv
 │   ├── uv.lock              # Deterministic Python lockfile
+│   ├── Dockerfile           # Backend container definition
 │   └── .env.example         # Environment variable template
 ├── frontend/
 │   ├── src/
 │   │   └── routes/
 │   │       └── +page.svelte # Svelte 5 UI with Runes, dropzone, skeleton loader & data table
 │   ├── package.json         # Frontend dependencies managed by pnpm
-│   └── vite.config.ts       # Vite configuration
+│   ├── vite.config.ts       # Vite configuration
+│   └── Dockerfile           # Frontend container definition
+├── docker-compose.yml       # Multi-container orchestration
 └── README.md                # System documentation and architecture overview
 ```
 
 ---
 
 ## Security & Reliability Design
-* **Zero-Trust Validation:** Even if the LLM extracts a valid-looking invoice schema, the system defaults to `needs_review = True` unless the vendor explicitly matches the deterministic allowlist.
-* **Ephemeral File Handling:** Uploaded PDFs are processed via temporary file streams and guaranteed to be unlinked from the server filesystem inside a `finally` block immediately after graph execution.
-* **Strict Schema Enforcement:** Pydantic models enforce strict typing on line-item quantities, unit prices, and totals before the payload ever reaches the validation node or client UI.
+- **Zero-Trust Validation:** Even if the LLM extracts a valid-looking invoice schema, the system defaults to `needs_review = True` unless the vendor explicitly matches the deterministic allowlist.
+- **Ephemeral File Handling:** Uploaded PDFs are processed via temporary file streams and guaranteed to be unlinked from the server filesystem inside a `finally` block immediately after graph execution.
+- **Strict Schema Enforcement:** Pydantic models enforce strict typing on line-item quantities, unit prices, and totals before the payload ever reaches the validation node or client UI.
