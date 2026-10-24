@@ -1,0 +1,33 @@
+name: Backend CI Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Sync Locked Dependencies
+        run: uv sync --frozen
+
+      - name: Run Deterministic Unit Tests
+        env:
+          PYTHONPATH: .
+          GOOGLE_API_KEY: "ci-mock-key-not-called"
+        run: uv run pytest -v
