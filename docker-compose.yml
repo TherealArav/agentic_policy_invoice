@@ -9,7 +9,7 @@ services:
       - ./backend/.env
     volumes:
       - ./backend:/app
-
+      - /app/.venv
   frontend:
     build: 
       context: ./frontend
