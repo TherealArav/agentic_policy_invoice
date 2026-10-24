@@ -14,7 +14,7 @@ from langsmith import traceable, get_current_run_tree
 
 # Load environment variables and configure observability
 load_dotenv()
-os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY") # Langchain defaults to looking for GOOGLE_API_KEY
+os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
 
 # Add the nested LineItem schema
 class LineItem(BaseModel):
