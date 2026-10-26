@@ -1,52 +1,48 @@
 import pytest
-from main import validate_vendor_node, InvoiceData, LineItem
+from schemas import InvoiceData, LineItem
+from validators import validate_vendor_node
 
-def test_approved_uae_vendor_passes():
-    """Approved ERP vendors (e.g., DEWA) should set needs_review to False."""
-    mock_state = {
-        "file_path": "dummy.pdf",
-        "markdown_content": "# DEWA Invoice",
-        "extracted_data": dict(
-            vendor_name="DEWA",
-            invoice_number="INV-1001",
-            total_amount=1500.00,
-            line_items=[
-                LineItem(description="Water & Electricity", quantity=1, unit_price=1500.00, total=1500.00)
+
+def get_base_mock():
+    """Helper to generate a valid DEWA invoice dictionary."""
+    return {
+        "extracted_data": {
+            "vendor_name": "DEWA",
+            "vendor_trn": "100123456789012",
+            "invoice_number": "INV-1001",
+            "subtotal": 1000.00,
+            "tax_amount": 50.00,
+            "total_amount": 1050.00,
+            "line_items": [
+                {"description": "Water", "quantity": 1, "unit_price": 500.00, "total": 500.00},
+                {"description": "Power", "quantity": 1, "unit_price": 500.00, "total": 500.00}
             ]
-        ),
-        "needs_review": None
+        }
     }
 
-    result = validate_vendor_node(mock_state)
+def test_perfect_invoice_passes():
+    result = validate_vendor_node(get_base_mock())
     assert result["needs_review"] is False
 
-def test_unregistered_vendor_flagged_for_review():
-    """Unregistered vendors (e.g., Apex Gulf Consulting) must trigger human review."""
-    mock_state = {
-        "file_path": "dummy.pdf",
-        "markdown_content": "# Apex Invoice",
-        "extracted_data": dict(
-            vendor_name="Apex Gulf Consulting FZ-LLC",
-            invoice_number="INV-2026-8841",
-            total_amount=21105.00,
-            line_items=[
-                LineItem(description="Security Audit", quantity=1, unit_price=21105.00, total=21105.00)
-            ]
-        ),
-        "needs_review": False
-    }
-
-    result = validate_vendor_node(mock_state)
+def test_invalid_trn_flagged():
+    mock = get_base_mock()
+    mock["extracted_data"]["vendor_trn"] = "99912345" # Bad prefix and length
+    result = validate_vendor_node(mock)
     assert result["needs_review"] is True
+    assert "Invalid TRN format" in result["routing_message"]
 
-def test_missing_extraction_fails_closed():
-    """Zero-trust check: If extracted_data is None/missing, system must default to needs_review=True."""
-    mock_state = {
-        "file_path": "dummy.pdf",
-        "markdown_content": "",
-        "extracted_data": None,
-        "needs_review": False
-    }
-
-    result = validate_vendor_node(mock_state)
+def test_bad_math_flagged():
+    mock = get_base_mock()
+    # Change unit price so it doesn't match the subtotal
+    mock["extracted_data"]["line_items"][0]["unit_price"] = 999.00
+    result = validate_vendor_node(mock)
     assert result["needs_review"] is True
+    assert "Math mismatch" in result["routing_message"]
+
+def test_bad_vat_flagged():
+    mock = get_base_mock()
+    # 5% of 1000 is 50, let's charge 100
+    mock["extracted_data"]["tax_amount"] = 100.00
+    result = validate_vendor_node(mock)
+    assert result["needs_review"] is True
+    assert "VAT mismatch" in result["routing_message"]

@@ -10,25 +10,16 @@ from google import genai
 from google.genai import types
 
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
 from langsmith import traceable, get_current_run_tree
+
+from schemas import InvoiceData
+from validators import validate_vendor_node
 
 # Load environment variables and configure observability
 load_dotenv()
 os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
 
-# Add the nested LineItem schema
-class LineItem(BaseModel):
-    description: str = Field(description="Description of the product or service.")
-    quantity: float = Field(description="Quantity of the item.", default=1.0)
-    unit_price: float = Field(description="Price per individual unit.")
-    total: float = Field(description="Total price for this line item.")
-
-# Define the JSON schema required
-class InvoiceData(BaseModel):
-    vendor_name: str = Field(description="The name of the vendor or company.")
-    total_amount: float = Field(description="The total monetary amount of the invoice.")
-    line_items: list[LineItem] = Field(description="List of all individual items billed in the invoice.")
-    
 #   Graph State
 class AgentState(TypedDict):
     file_path: str
@@ -54,16 +45,7 @@ def run_traceable(response: types.GenerateContentConfig):
             }
         })
     
-
-def verify_vendor_erp(vendor_name: str) -> bool:
-    """Mock ERP database check."""
-    # Simulate a database of approved regional vendors in the UAE
-    approved_vendors = ["Emirates Post", "DEWA", "Etisalat", "Careem Logistics"]
-    
-    # Check if any approved vendor is a substring of the extracted name
-    return any(approved.lower() in vendor_name.lower() for approved in approved_vendors)
-
-async def parse_document(state: AgentState) -> AgentState:
+async def parse_document_node(state: AgentState) -> AgentState:
     """Parse the document at the given file path and convert it to markdown"""
 
     print(f"Parsing {state['file_path']} with Docling...")
@@ -72,10 +54,11 @@ async def parse_document(state: AgentState) -> AgentState:
     return {"markdown_content": result.document.export_to_markdown()}
 
 @traceable(name="Gemini Extraction", run_type="llm")
-async def extract_entities(state: AgentState) -> AgentState:
+async def extract_entities_node(state: AgentState) -> AgentState:
     print("Extracting data natively with the Google GenAI SDK...")
     prompt = (
-        f"Extract the vendor name and total amount from this invoice.\n\n"
+        f"Extract the vendor name, 15-digit UAE Tax Registration Number (TRN), "
+        f"invoice number, subtotal, tax amount, total amount, and line items from this invoice.\n\n"
         f"INVOICE TEXT:\n{state['markdown_content']}"
     )
     
@@ -94,42 +77,50 @@ async def extract_entities(state: AgentState) -> AgentState:
     extracted_obj: InvoiceData = response.parsed
     return {"extracted_data": extracted_obj.model_dump()}
 
-def validate_vendor_node(state: AgentState):
-    """Validate the extracted vendor name against a mock ERP database."""
-    data = state.get("extracted_data", {})
-    if not data or "vendor_name" not in data:
-        return {"vendor_verified": False, "needs_review": True, "routing_message": "Extraction failed or missing vendor."}
+def erp_submission_node(state: AgentState):
+    """The final node that pushes data to the real ERP. We pause BEFORE this if flagged."""
+    existing_msg = state.get("routing_message", "")
+    if "Manual Override" in existing_msg:
+        return {"routing_message": f"{existing_msg} -> Successfully submitted to ERP."}
+    
+    return {"routing_message": f"{existing_msg} -> Successfully submitted to ERP."}
 
-    vendor = data["vendor_name"]
-    is_valid = verify_vendor_erp(vendor)
+def human_review_node(state: AgentState):
+    """Dummy node. The graph pauses BEFORE executing this. 
+    When resumed, it simply passes the state forward."""
+    return {}
 
-    if is_valid:
-        return {
-            "vendor_verified": True, 
-            "needs_review": False, 
-            "routing_message": f"Auto-Approved: '{vendor}' found in ERP."
-        }
-    else:
-        return {
-            "vendor_verified": False, 
-            "needs_review": True, 
-            "routing_message": f"Flagged: '{vendor}' is an unregistered vendor. Routing to human accounts payable."
-        }
-
+def route_after_validation(state: AgentState):
+    """Conditional edge routing based on the deterministic validation."""
+    if state.get("needs_review"):
+        return "human_review" # We route to the node we want to interrupt
+    
+    return "erp_submission"
 
 # Build the LangGraph Workflow
 builder = StateGraph(AgentState)
-builder.add_node("parse_document", parse_document)
-builder.add_node("extract_entities", extract_entities)
+builder.add_node("parse_document", parse_document_node)
+builder.add_node("extract_entities", extract_entities_node)
 builder.add_node("validate_vendor", validate_vendor_node)
+builder.add_node("human_review" ,human_review_node)
+builder.add_node("erp_submission", erp_submission_node)
 
 # Define the flow
 builder.add_edge(START, "parse_document")
 builder.add_edge("parse_document", "extract_entities")
 builder.add_edge("extract_entities", "validate_vendor")
-builder.add_edge("validate_vendor", END)
+builder.add_conditional_edges("validate_vendor",route_after_validation,  {
+    "human_review": "human_review", # Human review resumes into ERP submission
+    "erp_submission": "erp_submission"
+})
+builder.add_edge("human_review", "erp_submission")
+builder.add_edge("erp_submission", END)
 
-graph = builder.compile()
+memory = MemorySaver()
+graph = builder.compile(
+    checkpointer=memory,
+    interrupt_before=["human_review"] # The graph pauses right before executing this node
+)
 
 # Execute the Graph
 async def main():

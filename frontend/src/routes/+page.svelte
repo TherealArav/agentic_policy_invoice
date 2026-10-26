@@ -7,7 +7,16 @@
 	let needsReview = $state<boolean>(false);
 	let routingMessage = $state<string>('');
 
+	// New HITL (Human-in-the-Loop) State Runes
+	let threadId = $state<string | null>(null);
+	let reviewStatus = $state<string | null>(null); // 'paused_for_review' | 'completed' | 'approved_and_submitted' | 'rejected'
+	let reviewerNotes = $state<string>('');
+	let isReviewing = $state<boolean>(false);
+
 	let isSubmitDisabled = $derived(!file || loading);
+	let isPausedForReview = $derived(
+		reviewStatus === 'paused_for_review' || (needsReview && reviewStatus !== 'rejected')
+	);
 
 	function handleFileChange(event: Event) {
 		const target = event.target as HTMLInputElement;
@@ -39,6 +48,9 @@
 
 		loading = true;
 		invoiceData = null; // Clear previous results
+		threadId = null;
+		reviewStatus = null;
+		reviewerNotes = '';
 
 		const formData = new FormData();
 		formData.append('file', file);
@@ -52,14 +64,50 @@
 			if (!response.ok) throw new Error('Server returned an error');
 
 			const result = await response.json();
-			invoiceData = result.data;
+			// Support both result.extracted_data (new server.py) and result.data (legacy)
+			invoiceData = result.extracted_data || result.data;
 			needsReview = result.needs_review ?? true;
 			routingMessage = result.routing_message || 'System Error: Validation bypassed.';
+			threadId = result.thread_id || null;
+			reviewStatus = result.status || (needsReview ? 'paused_for_review' : 'completed');
 		} catch (error) {
 			console.error('Upload failed:', error);
 			alert('Failed to extract data. Is the FastAPI server running?');
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function submitReview(action: 'approve' | 'reject') {
+		if (!threadId) return;
+
+		isReviewing = true;
+		try {
+			const response = await fetch(`/api/review/${threadId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action,
+					reviewer_notes: reviewerNotes.trim()
+				})
+			});
+
+			if (!response.ok) {
+				const err = await response.json();
+				throw new Error(err.detail || 'Failed to submit review decision.');
+			}
+
+			const updated = await response.json();
+			invoiceData = updated.extracted_data || updated.data || invoiceData;
+			needsReview = updated.needs_review ?? false;
+			routingMessage = updated.routing_message || routingMessage;
+			reviewStatus = updated.status;
+			reviewerNotes = '';
+		} catch (error: any) {
+			console.error('Review failed:', error);
+			alert(error.message || 'Failed to resume LangGraph thread.');
+		} finally {
+			isReviewing = false;
 		}
 	}
 </script>
@@ -180,26 +228,96 @@
 		<!-- Final Results Output -->
 		{#if invoiceData && !loading}
 			<div class="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-				<h2 class="mb-4 text-xl font-semibold">Verification Results</h2>
+				<div class="mb-4 flex items-center justify-between">
+					<h2 class="text-xl font-semibold">Verification Results</h2>
+					{#if threadId}
+						<span class="rounded bg-gray-100 px-2.5 py-1 font-mono text-xs text-gray-600">
+							Thread: {threadId.slice(0, 8)}...
+						</span>
+					{/if}
+				</div>
 
+				<!-- 3-State Status & HITL Banner -->
 				<div
-					class="mb-6 rounded-md border p-4 {needsReview
-						? 'border-red-200 bg-red-50'
-						: 'border-green-200 bg-green-50'}"
+					class="mb-6 rounded-md border p-4 transition-all {isPausedForReview
+						? 'border-amber-300 bg-amber-50'
+						: reviewStatus === 'rejected'
+							? 'border-red-300 bg-red-50'
+							: 'border-green-200 bg-green-50'}"
 				>
-					<div class="flex items-center space-x-3">
+					<div class="flex items-start space-x-3">
 						<span
-							class="h-3 w-3 flex-shrink-0 rounded-full {needsReview
-								? 'bg-red-600'
-								: 'bg-green-600'}"
+							class="mt-1 h-3 w-3 flex-shrink-0 rounded-full {isPausedForReview
+								? 'animate-pulse bg-amber-600'
+								: reviewStatus === 'rejected'
+									? 'bg-red-600'
+									: 'bg-green-600'}"
 						></span>
-						<div>
-							<h3 class="text-sm font-medium {needsReview ? 'text-red-800' : 'text-green-800'}">
-								{needsReview ? 'Human Review Required' : 'Automated Verification Passed'}
+						<div class="flex-1">
+							<h3
+								class="text-sm font-semibold {isPausedForReview
+									? 'text-amber-900'
+									: reviewStatus === 'rejected'
+										? 'text-red-800'
+										: 'text-green-800'}"
+							>
+								{#if isPausedForReview}
+									LangGraph Paused — Human Review Required
+								{:else if reviewStatus === 'rejected'}
+									Invoice Rejected & Blocked from ERP
+								{:else}
+									Automated Verification Passed & Submitted
+								{/if}
 							</h3>
-							<p class="mt-1 text-sm {needsReview ? 'text-red-700' : 'text-green-700'}">
+							<p
+								class="mt-1 text-sm {isPausedForReview
+									? 'text-amber-800'
+									: reviewStatus === 'rejected'
+										? 'text-red-700'
+										: 'text-green-700'}"
+							>
 								{routingMessage}
 							</p>
+
+							<!-- Human-in-the-Loop Action Bar -->
+							{#if isPausedForReview && threadId}
+								<div class="mt-4 border-t border-amber-200 pt-4">
+									<label
+										for="reviewer-notes"
+										class="block text-xs font-semibold tracking-wider text-amber-900 uppercase"
+									>
+										AP Reviewer Audit Notes (Optional)
+									</label>
+									<div class="mt-2 flex flex-col gap-3 sm:flex-row">
+										<input
+											id="reviewer-notes"
+											type="text"
+											bind:value={reviewerNotes}
+											disabled={isReviewing}
+											placeholder="e.g., Verified TRN and VAT exception with vendor..."
+											class="flex-1 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-amber-500 focus:outline-none disabled:opacity-50"
+										/>
+										<div class="flex gap-2">
+											<button
+												type="button"
+												onclick={() => submitReview('approve')}
+												disabled={isReviewing}
+												class="cursor-pointer rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+											>
+												{isReviewing ? 'Resuming...' : 'Approve & Submit'}
+											</button>
+											<button
+												type="button"
+												onclick={() => submitReview('reject')}
+												disabled={isReviewing}
+												class="cursor-pointer rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 shadow-sm transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+											>
+												Reject
+											</button>
+										</div>
+									</div>
+								</div>
+							{/if}
 						</div>
 					</div>
 				</div>
@@ -212,12 +330,37 @@
 								Vendor Details
 							</h4>
 							<p class="text-lg font-medium text-gray-900">{invoiceData.vendor_name}</p>
+							{#if invoiceData.invoice_number}
+								<p class="text-xs text-gray-500">Invoice #{invoiceData.invoice_number}</p>
+							{/if}
 						</div>
 						<div class="text-right">
 							<h4 class="text-sm font-semibold tracking-wider text-gray-500 uppercase">
 								Total Amount
 							</h4>
 							<p class="text-2xl font-bold text-gray-900">{invoiceData.total_amount} AED</p>
+						</div>
+					</div>
+
+					<!-- UAE FTA Compliance Breakdown Cards -->
+					<div class="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+						<div class="rounded-lg border border-gray-200 bg-gray-50 p-3">
+							<span class="text-xs font-medium text-gray-500 uppercase">UAE Vendor TRN</span>
+							<p class="mt-1 font-mono text-sm font-semibold text-gray-900">
+								{invoiceData.vendor_trn || 'Not Provided'}
+							</p>
+						</div>
+						<div class="rounded-lg border border-gray-200 bg-gray-50 p-3">
+							<span class="text-xs font-medium text-gray-500 uppercase">Subtotal (Excl. VAT)</span>
+							<p class="mt-1 text-sm font-semibold text-gray-900">
+								{invoiceData.subtotal ?? '—'} AED
+							</p>
+						</div>
+						<div class="rounded-lg border border-gray-200 bg-gray-50 p-3">
+							<span class="text-xs font-medium text-gray-500 uppercase">UAE VAT (5%)</span>
+							<p class="mt-1 text-sm font-semibold text-gray-900">
+								{invoiceData.tax_amount ?? '—'} AED
+							</p>
 						</div>
 					</div>
 
@@ -242,7 +385,7 @@
 								</tr>
 							</thead>
 							<tbody class="divide-y divide-gray-200 bg-white">
-								{#each invoiceData.line_items as item}
+								{#each invoiceData.line_items ?? [] as item}
 									<tr>
 										<td
 											class="py-4 pr-3 pl-4 text-sm font-medium whitespace-nowrap text-gray-900 sm:pl-6"
