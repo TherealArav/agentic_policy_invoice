@@ -79,8 +79,11 @@ async def extract_entities_node(state: AgentState) -> AgentState:
 
 def erp_submission_node(state: AgentState):
     """The final node that pushes data to the real ERP. We pause BEFORE this if flagged."""
-    # In production, this makes an API call to SAP/Oracle
-    return {"routing_message": "Successfully submitted to ERP."}
+    existing_msg = state.get("routing_message", "")
+    if "Manual Override" in existing_msg:
+        return {"routing_message": f"{existing_msg} -> Successfully submitted to ERP."}
+    
+    return {"routing_message": f"{existing_msg} -> Successfully submitted to ERP."}
 
 def human_review_node(state: AgentState):
     """Dummy node. The graph pauses BEFORE executing this. 

@@ -77,7 +77,7 @@ async def review_invoice(thread_id: str, payload: ReviewRequest):
     """
     config = {"configurable": {"thread_id": thread_id}}
 
-    # 1. Verify the thread exists in the Checkpointer (MemorySaver / SqliteSaver)
+    # Verify the thread exists in the Checkpointer (MemorySaver / SqliteSaver)
     snapshot = await graph.aget_state(config)
     if not snapshot.values:
         raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
@@ -88,7 +88,7 @@ async def review_invoice(thread_id: str, payload: ReviewRequest):
             detail="This invoice thread is not currently awaiting human review.",
         )
 
-    # 2. Path A: Human Rejects the Invoice
+    # Path A: Human Rejects the Invoice
     if payload.action == "reject":
         note = f" ({payload.reviewer_notes})" if payload.reviewer_notes else ""
         rejection_msg = f"Rejected by AP Reviewer{note}. Blocked from ERP submission."
@@ -111,7 +111,7 @@ async def review_invoice(thread_id: str, payload: ReviewRequest):
             **updated_snapshot.values,
         }
 
-    # 3. Path B: Human Approves the Invoice -> Resume Graph Execution
+    # Path B: Human Approves the Invoice -> Resume Graph Execution
     note = f" ({payload.reviewer_notes})" if payload.reviewer_notes else ""
     await graph.aupdate_state(
         config,
