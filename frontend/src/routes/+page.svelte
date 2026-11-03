@@ -7,7 +7,7 @@
 	let needsReview = $state<boolean>(false);
 	let routingMessage = $state<string>('');
 
-	// New HITL (Human-in-the-Loop) State Runes
+	// HITL (Human-in-the-Loop) State Runes
 	let threadId = $state<string | null>(null);
 	let reviewStatus = $state<string | null>(null); // 'paused_for_review' | 'completed' | 'approved_and_submitted' | 'rejected'
 	let reviewerNotes = $state<string>('');

@@ -41,6 +41,12 @@ def validate_vendor_node(state):
         needs_review = True
         messages.append(f"VAT mismatch (Expected 5%: {expected_tax}, Got: {tax_amount})")
 
+    # Total Amount Check
+    total_amount = data.get('total_amount', 0.0)
+    if abs(total_amount - (subtotal + tax_amount)) > 0.05:
+        needs_review = True
+        messages.append(f"Total mismatch (Subtotal + Tax: {subtotal + tax_amount}, Got: {total_amount})")
+    
     # Routing Output
     if needs_review:
         return {

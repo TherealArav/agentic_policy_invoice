@@ -10,7 +10,6 @@ from google import genai
 from google.genai import types
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 from langsmith import traceable, get_current_run_tree
 
 from schemas import InvoiceData
@@ -33,6 +32,7 @@ class AgentState(TypedDict):
 # Initialize the Unified GenAI Client
 client = genai.Client()
 
+# Track token usage for traceable runs
 def run_traceable(response: types.GenerateContentConfig):
     """Helper function to log token usage for traceable runs."""
     run = get_current_run_tree()
@@ -44,7 +44,10 @@ def run_traceable(response: types.GenerateContentConfig):
                 "total_tokens": response.usage_metadata.total_token_count,
             }
         })
-    
+
+# Define the nodes for the LangGraph workflow
+
+# Read the PDF, convert it to markdown, and store it in the state
 async def parse_document_node(state: AgentState) -> AgentState:
     """Parse the document at the given file path and convert it to markdown"""
 
@@ -53,6 +56,7 @@ async def parse_document_node(state: AgentState) -> AgentState:
     result = converter.convert(state['file_path'])
     return {"markdown_content": result.document.export_to_markdown()}
 
+# Pass the markdown content to the Gemini model for entry extraction
 @traceable(name="Gemini Extraction", run_type="llm")
 async def extract_entities_node(state: AgentState) -> AgentState:
     print("Extracting data natively with the Google GenAI SDK...")
@@ -73,10 +77,20 @@ async def extract_entities_node(state: AgentState) -> AgentState:
     )
 
     run_traceable(response)
-    
+
+    # Parse the response into the InvoiceData model and store it in state
     extracted_obj: InvoiceData = response.parsed
     return {"extracted_data": extracted_obj.model_dump()}
 
+# Define the conditional routing function based on validation results
+def route_after_validation(state: AgentState):
+    """Conditional edge routing based on the deterministic validation."""
+    if state.get("needs_review"):
+        return "human_review" # We route to the node we want to interrupt
+    
+    return "erp_submission"
+
+# Validate the vendor information and determine if human review is needed
 def erp_submission_node(state: AgentState):
     """The final node that pushes data to the real ERP. We pause BEFORE this if flagged."""
     existing_msg = state.get("routing_message", "")
@@ -85,17 +99,12 @@ def erp_submission_node(state: AgentState):
     
     return {"routing_message": f"{existing_msg} -> Successfully submitted to ERP."}
 
+# Define a dummy node for human review. The graph will pause before executing this node.
 def human_review_node(state: AgentState):
     """Dummy node. The graph pauses BEFORE executing this. 
     When resumed, it simply passes the state forward."""
     return {}
 
-def route_after_validation(state: AgentState):
-    """Conditional edge routing based on the deterministic validation."""
-    if state.get("needs_review"):
-        return "human_review" # We route to the node we want to interrupt
-    
-    return "erp_submission"
 
 # Build the LangGraph Workflow
 builder = StateGraph(AgentState)
@@ -110,17 +119,12 @@ builder.add_edge(START, "parse_document")
 builder.add_edge("parse_document", "extract_entities")
 builder.add_edge("extract_entities", "validate_vendor")
 builder.add_conditional_edges("validate_vendor",route_after_validation,  {
-    "human_review": "human_review", # Human review resumes into ERP submission
+    "human_review": "human_review", 
     "erp_submission": "erp_submission"
 })
 builder.add_edge("human_review", "erp_submission")
 builder.add_edge("erp_submission", END)
 
-memory = MemorySaver()
-graph = builder.compile(
-    checkpointer=memory,
-    interrupt_before=["human_review"] # The graph pauses right before executing this node
-)
 
 # Execute the Graph
 async def main():
@@ -128,6 +132,10 @@ async def main():
     
     # Initialize the state
     initial_state = {"file_path": pdf_path}
+
+    graph = builder.compile(
+    interrupt_before=["human_review"] # The graph pauses right before executing this node
+    )
     
     # Run the graph
     final_state = await graph.ainvoke(initial_state)

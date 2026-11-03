@@ -2,13 +2,28 @@ import os
 import shutil
 import uuid
 from typing import Literal
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
-from main import graph
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from main import builder
 
-app = FastAPI(title="UAE Agentic Invoice API")
+# Lock down msgpack deserialization before initializing the SQLite checkpointer
+os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manages the persistent async SQLite connection lifecycle."""
+    async with AsyncSqliteSaver.from_conn_string("checkpoints.sqlite") as saver:
+        app.state.graph = builder.compile(
+            checkpointer=saver,
+            interrupt_before=["human_review"]
+        )
+        yield # Server runs here while connection stays open
+
+app = FastAPI(title="UAE Agentic Invoice API", lifespan=lifespan)
 
 # Configure CORS for your Svelte 5 frontend
 app.add_middleware(
@@ -26,7 +41,7 @@ class ReviewRequest(BaseModel):
 
 
 @app.post("/api/extract")
-async def extract_invoice(file: UploadFile = File(...)):
+async def extract_invoice(request: Request, file: UploadFile = File(...)):
     """
     1. Saves the uploaded PDF temporarily.
     2. Starts a new stateful LangGraph thread.
@@ -47,10 +62,10 @@ async def extract_invoice(file: UploadFile = File(...)):
         initial_state = {"file_path": temp_file_path}
 
         # Run the graph until it hits END (auto-approved) or pauses before "human_review" (flagged)
-        result = await graph.ainvoke(initial_state, config=config)
-
+        result = await request.app.state.graph.ainvoke(initial_state, config=config)
+        
         # Inspect the checkpoint to see if the graph is paused waiting for human review
-        snapshot = await graph.aget_state(config)
+        snapshot = await request.app.state.graph.aget_state(config)
         next_nodes = list(snapshot.next) if snapshot.next else []
 
         return {
@@ -71,14 +86,14 @@ async def extract_invoice(file: UploadFile = File(...)):
 
 
 @app.post("/api/review/{thread_id}")
-async def review_invoice(thread_id: str, payload: ReviewRequest):
+async def review_invoice(request: Request, thread_id: str, payload: ReviewRequest):
     """
     Resumes or halts a paused LangGraph execution thread after human intervention.
     """
     config = {"configurable": {"thread_id": thread_id}}
 
     # Verify the thread exists in the Checkpointer (MemorySaver / SqliteSaver)
-    snapshot = await graph.aget_state(config)
+    snapshot = await request.app.state.graph.aget_state(config)
     if not snapshot.values:
         raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
 
@@ -95,7 +110,7 @@ async def review_invoice(thread_id: str, payload: ReviewRequest):
 
         # Update state and use as_node="erp_submission" so the graph marks itself as finished (END)
         # without executing the actual erp_submission_node
-        await graph.aupdate_state(
+        await request.app.state.graph.aupdate_state(
             config,
             {
                 "vendor_verified": False,
@@ -104,7 +119,7 @@ async def review_invoice(thread_id: str, payload: ReviewRequest):
             },
             as_node="erp_submission",
         )
-        updated_snapshot = await graph.aget_state(config)
+        updated_snapshot = await request.app.state.graph.aget_state(config)
         return {
             "status": "rejected",
             "thread_id": thread_id,
@@ -113,7 +128,7 @@ async def review_invoice(thread_id: str, payload: ReviewRequest):
 
     # Path B: Human Approves the Invoice -> Resume Graph Execution
     note = f" ({payload.reviewer_notes})" if payload.reviewer_notes else ""
-    await graph.aupdate_state(
+    await request.app.state.graph.aupdate_state(
         config,
         {
             "needs_review": False,
@@ -122,7 +137,7 @@ async def review_invoice(thread_id: str, payload: ReviewRequest):
     )
 
     # Passing None tells LangGraph to continue from the paused breakpoint ("human_review" -> "erp_submission")
-    final_state = await graph.ainvoke(None, config=config)
+    final_state = await request.app.state.graph.ainvoke(None, config=config)
 
     return {
         "status": "approved_and_submitted",
