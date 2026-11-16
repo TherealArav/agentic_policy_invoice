@@ -14,54 +14,25 @@ An enterprise-grade, stateful AI pipeline built with **LangGraph**, **FastAPI**,
 ## System Architecture
 
 ```mermaid
-flowchart TB
-    subgraph Client ["Frontend (Svelte 5 Runes + Tailwind CSS)"]
-        UI["Drag-and-Drop Upload Zone"]
-        Banner["3-State Status & HITL Review Banner"]
-        Actions["Approve Override / Reject Controls"]
+flowchart LR
+    UI["Svelte 5 UI"] -->|"PDF upload"| EX["POST /api/extract"]
+
+    subgraph Agent ["LangGraph agent"]
+        P["Parse PDF<br/>(Docling)"] --> E["Extract data<br/>(Gemini)"]
+        E --> V{"Validate<br/>FTA & ERP rules"}
+        V -->|"pass"| S["Submit to ERP"]
+        V -->|"flagged"| H["Paused for<br/>human review"]
+        H -->|"approve"| S
     end
 
-    subgraph API ["Backend API (FastAPI + Lifespan Manager)"]
-        ExtractEP["POST /api/extract"]
-        ReviewEP["POST /api/review/{thread_id}"]
-        TempFile["Ephemeral PDF Stream (temp_uuid_*.pdf)"]
-    end
-
-    subgraph Agent ["LangGraph State Machine (AgentState)"]
-        direction TB
-        Node1["1. parse_document (Docling Layout Parser)"]
-        Node2["2. extract_entities (Gemini + Pydantic InvoiceData)"]
-        Node3["3. validate_vendor (UAE FTA & ERP Guardrails)"]
-        Router{"route_after_validation"}
-        HitlNode(("INTERRUPT BEFORE:<br/>human_review"))
-        ErpNode["4. erp_submission (ERP Payload & Audit Trail)"]
-        EndNode(["END"])
-
-        Node1 -->|markdown_content| Node2
-        Node2 -->|extracted_data| Node3
-        Node3 --> Router
-        Router -->|"needs_review: False"| ErpNode
-        Router -->|"needs_review: True"| HitlNode
-        HitlNode -->|"Approve: ainvoke(None)"| ErpNode
-        HitlNode -->|"Reject: aupdate_state(as_node='erp_submission')"| EndNode
-        ErpNode --> EndNode
-    end
-
-    subgraph Storage ["Persistence & Observability"]
-        SQLite[("SQLite Checkpointer<br/>(checkpoints.sqlite)")]
-        LangSmith["LangSmith Tracing<br/>(@traceable + Token Metadata)"]
-    end
-
-    UI -->|"FormData PDF"| ExtractEP
-    ExtractEP --> TempFile
-    TempFile -->|"file_path + thread_id"| Node1
-    Node3 -.->|"State Snapshot"| Banner
-    Banner --> Actions
-    Actions -->|"Action + Reviewer Audit Notes"| ReviewEP
-    ReviewEP -->|"Resume / Halts Thread"| HitlNode
-    Agent <-->|"AsyncSqliteSaver R/W"| SQLite
-    Agent -.->|"RunTree Telemetry"| LangSmith
+    EX --> P
+    S --> D(["Done"])
+    H -->|"reject"| D
+    UI -.->|"POST /api/review"| H
+    H <-.->|"checkpoint"| DB[("SQLite")]
 ```
+
+Uploaded PDFs pass through four LangGraph nodes. Invoices that fail a guardrail pause at `human_review`, and their state is saved to SQLite until a reviewer approves or rejects them from the UI. All runs are traced in LangSmith.
 
 ---
 
@@ -73,8 +44,8 @@ LLMs excel at unstructured layout extraction but are prone to arithmetic halluci
 | :--- | :--- | :--- |
 | **1. ERP Vendor Allowlist** | Case-insensitive match against approved vendor master list (`DEWA`, `Etisalat`, `Emirates Post`, `Careem Logistics`) | Prevents unauthorized or fraudulent vendor invoices from entering the Accounts Payable ledger. |
 | **2. UAE TRN Format Check** | Strict regular expression `^100\d{12}$` against `vendor_trn` | Enforces UAE Federal Tax Authority (FTA) Tax Registration Number format (15 digits starting with prefix `100`) required for corporate VAT reclamation. |
-| **3. Line-Item Math Audit** | $\left\|\text{subtotal} - \sum(\text{quantity} \times \text{unit\_price})\right\| \le 0.05$ | Programmatically recalculates line-item totals to catch LLM OCR misreads, smudged digits, or vendor billing errors. |
-| **4. UAE 5% VAT Tolerance** | $\left\|\text{tax\_amount} - (\text{subtotal} \times 0.05)\right\| \le 0.05$ | Enforces the standard 5% UAE Value Added Tax rate within a strict `0.05 AED` rounding tolerance. |
+| **3. Line-Item Math Audit** | $`\lvert \mathrm{subtotal} - \sum (\mathrm{quantity} \times \mathrm{unit\_price}) \rvert \le 0.05`$ | Programmatically recalculates line-item totals to catch LLM OCR misreads, smudged digits, or vendor billing errors. |
+| **4. UAE 5% VAT Tolerance** | $`\lvert \mathrm{tax\_amount} - (\mathrm{subtotal} \times 0.05) \rvert \le 0.05`$ | Enforces the standard 5% UAE Value Added Tax rate within a strict `0.05 AED` rounding tolerance. |
 
 *Note: All failed rules accumulate into a pipe-delimited diagnostic string (e.g., `Flagged: Unregistered vendor 'Apex' | Invalid TRN format '99988877' | Math mismatch... | VAT mismatch...`) so human reviewers have complete context.*
 
