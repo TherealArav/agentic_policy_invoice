@@ -31,6 +31,14 @@ class AgentState(TypedDict):
 
 # Initialize the Unified GenAI Client
 client = genai.Client()
+_converter: DocumentConverter | None = None
+
+
+def _get_converter() -> DocumentConverter:
+    global _converter
+    if _converter is None:          # created on first use, not at import, so tests stay fast
+        _converter = DocumentConverter()
+    return _converter
 
 # Track token usage for traceable runs
 def run_traceable(response: types.GenerateContentConfig):
@@ -48,12 +56,9 @@ def run_traceable(response: types.GenerateContentConfig):
 # Define the nodes for the LangGraph workflow
 
 # Read the PDF, convert it to markdown, and store it in the state
-async def parse_document_node(state: AgentState) -> AgentState:
-    """Parse the document at the given file path and convert it to markdown"""
-
-    print(f"Parsing {state['file_path']} with Docling...")
-    converter = DocumentConverter()
-    result = converter.convert(state['file_path'])
+async def parse_document_node(state: AgentState) -> dict:
+    """Parse the PDF to markdown off the event loop."""
+    result = await asyncio.to_thread(_get_converter().convert, state["file_path"])
     return {"markdown_content": result.document.export_to_markdown()}
 
 # Pass the markdown content to the Gemini model for entry extraction

@@ -35,7 +35,9 @@ def test_perfect_invoice_passes(base_mock):
         "Etisalat",
         "Emirates Post",
         "Careem Logistics",
-        "dewa commercial",
+        "Dewan Fraud LLC", 
+        "NotEtisalat Ltd", 
+        "dewa commercial"
     ],
 )
 def test_approved_vendor_allowlist_case_insensitive(base_mock, approved_vendor):

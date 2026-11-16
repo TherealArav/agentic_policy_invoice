@@ -1,5 +1,18 @@
 import re
 
+APPROVED_VENDORS = {
+    "dewa",
+    "dubai electricity and water authority",
+    "etisalat",
+    "emirates post",
+    "careem logistics",
+}
+
+def _normalize_vendor(name: str) -> str:
+    name = re.sub(r"\(.*?\)", " ", name.lower())   # drop "(Dubai Electricity ...)" descriptions
+    name = re.sub(r"[^a-z0-9]+", " ", name)        # punctuation -> space
+    return " ".join(name.split())
+
 def validate_vendor_node(state):
     """Validates the extracted dictionary against UAE ERP and VAT rules."""
 
@@ -14,8 +27,7 @@ def validate_vendor_node(state):
     
     # ERP Vendor Allowlist
     approved_vendors = ["dewa", "etisalat", "emirates post", "careem logistics"] # In future, data will be extracted from approved vendor's database
-    if not any(approved in vendor.lower() for approved in approved_vendors):
-        needs_review = True
+    if _normalize_vendor(vendor) not in APPROVED_VENDORS:
         messages.append(f"Unregistered vendor '{vendor}'")
 
     # UAE TRN Format Check (15 digits, starts with 100)

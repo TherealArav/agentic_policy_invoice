@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 .env
 temp_*.pdf
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

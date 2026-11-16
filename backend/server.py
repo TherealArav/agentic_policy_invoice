@@ -1,6 +1,7 @@
 import os
 import shutil
 import uuid
+import logging, tempfile
 from typing import Literal
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,11 +13,17 @@ from main import builder
 
 # Lock down msgpack deserialization before initializing the SQLite checkpointer
 os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
+DB_PATH = os.getenv("CHECKPOINT_DB_PATH", "checkpoints.sqlite")
+
+logger = logging.getLogger(__name__)
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+PUBLIC_STATE_KEYS = ("extracted_data", "vendor_verified", "needs_review", "routing_message")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manages the persistent async SQLite connection lifecycle."""
-    async with AsyncSqliteSaver.from_conn_string("checkpoints.sqlite") as saver:
+    async with AsyncSqliteSaver.from_conn_string(DB_PATH) as saver:
         app.state.graph = builder.compile(
             checkpointer=saver,
             interrupt_before=["human_review"]
@@ -40,6 +47,9 @@ class ReviewRequest(BaseModel):
     reviewer_notes: str = ""
 
 
+def _public_state(state: dict) -> dict:
+    return {k: state.get(k) for k in PUBLIC_STATE_KEYS}
+
 @app.post("/api/extract")
 async def extract_invoice(request: Request, file: UploadFile = File(...)):
     """
@@ -47,50 +57,51 @@ async def extract_invoice(request: Request, file: UploadFile = File(...)):
     2. Starts a new stateful LangGraph thread.
     3. Returns the extracted state, thread_id, and whether the graph paused at human_review.
     """
-    if not file.filename.lower().endswith(".pdf"):
+    if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    if await file.read(5) != b"%PDF-":                      # check the file's first bytes
+        raise HTTPException(status_code=400, detail="File is not a valid PDF.")
+    await file.seek(0)
 
     thread_id = str(uuid.uuid4())
-    temp_file_path = f"temp_{thread_id}_{file.filename}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": str(thread_id)}}
+    temp_file_path = None
 
     try:
-        # Write the uploaded PDF stream to disk for Docling
-        with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_file_path = tmp.name                       # path not built from user input
+            size = 0
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="PDF exceeds 10MB limit.")
+                tmp.write(chunk)
 
-        initial_state = {"file_path": temp_file_path}
-
-        # Run the graph until it hits END (auto-approved) or pauses before "human_review" (flagged)
-        result = await request.app.state.graph.ainvoke(initial_state, config=config)
-        
-        # Inspect the checkpoint to see if the graph is paused waiting for human review
+        result = await request.app.state.graph.ainvoke({"file_path": temp_file_path}, config=config)
         snapshot = await request.app.state.graph.aget_state(config)
-        next_nodes = list(snapshot.next) if snapshot.next else []
+        next_nodes = list(snapshot.next or [])
 
         return {
             "status": "paused_for_review" if "human_review" in next_nodes else "completed",
-            "thread_id": thread_id,
+            "thread_id": str(thread_id),
             "next_step": next_nodes,
-            # Flatten state keys at top level so existing Svelte UI works seamlessly
-            **result,
+            **_public_state(result),
         }
-
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {str(e)}")
-
+        logger.exception("Pipeline failed for thread %s", thread_id)
+        raise HTTPException(status_code=500, detail="Invoice processing failed.") from e
     finally:
-        # Zero-trust cleanup: Always delete the temporary PDF
-        if os.path.exists(temp_file_path):
+        if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
-
 @app.post("/api/review/{thread_id}")
-async def review_invoice(request: Request, thread_id: str, payload: ReviewRequest):
+async def review_invoice(request: Request, thread_id: uuid.UUID, payload: ReviewRequest):
     """
     Resumes or halts a paused LangGraph execution thread after human intervention.
     """
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": str(thread_id)}}
 
     # Verify the thread exists in the Checkpointer (MemorySaver / SqliteSaver)
     snapshot = await request.app.state.graph.aget_state(config)
@@ -122,8 +133,8 @@ async def review_invoice(request: Request, thread_id: str, payload: ReviewReques
         updated_snapshot = await request.app.state.graph.aget_state(config)
         return {
             "status": "rejected",
-            "thread_id": thread_id,
-            **updated_snapshot.values,
+            "thread_id": str(thread_id),
+            **_public_state(...),
         }
 
     # Path B: Human Approves the Invoice -> Resume Graph Execution
@@ -141,6 +152,6 @@ async def review_invoice(request: Request, thread_id: str, payload: ReviewReques
 
     return {
         "status": "approved_and_submitted",
-        "thread_id": thread_id,
-        **final_state,
+        "thread_id": str(thread_id),
+        **_public_state(...),
     }

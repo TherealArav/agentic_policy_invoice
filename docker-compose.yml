@@ -11,6 +11,8 @@ services:
       - ./backend:/app
       - /app/.venv
   frontend:
+    environment:
+      - API_PROXY_TARGET=http://backend:8000
     build: 
       context: ./frontend
     ports:
